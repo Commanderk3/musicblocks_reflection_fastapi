@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
-from typing import List, Dict
+from typing import List, Dict, Optional
 from fastapi.middleware.cors import CORSMiddleware
 
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, BaseMessage
@@ -9,7 +9,7 @@ from langchain_huggingface import HuggingFaceEmbeddings
 
 import config
 import json
-from utils.prompts import mentor_config, general_instructions, generateAlgorithmPrompt, updateAlgorithmPrompt, generateAnalysis
+from utils.prompts import mentor_config, general_instructions, generateAlgorithmPrompt, updateAlgorithmPrompt, generateAnalysis, generateConversationSummary
 from utils.parser import convert_music_blocks
 from utils.blocks import findBlockInfo
 from retriever import getContext
@@ -23,8 +23,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-embeddings = HuggingFaceEmbeddings(model_name=config.EMBEDDING_MODEL)
 
 # Chat endpoint: thinking disabled for faster, conversational responses
 llm = ChatGoogleGenerativeAI(
@@ -42,12 +40,17 @@ reasoning_llm = ChatGoogleGenerativeAI(
     thinking_budget=-1  # Dynamic thinking (model decides)
 )
 
+SUMMARIZE_THRESHOLD = 16  # 8 pairs of user+AI messages
+KEEP_RECENT = 6  # 3 pairs sent in full next call
+
 # request schemas
 class QueryRequest(BaseModel):
     query: str
     messages: List[Dict[str, str]]
     mentor: str
     algorithm: str
+    conversation_summary: Optional[str] = None  
+    summarized_up_to: int = 0  
 
 class CodeRequest(BaseModel):
     code: str
@@ -117,12 +120,17 @@ async def update_projectcode(request: CodeUpdateRequest):
     except Exception as e:
         return {"error": str(e)}
 
+
+
+
 @app.post("/chat/")
 async def chat(request: QueryRequest):
     query = request.query.strip()
-    raw_messages = request.messages
+    raw_messages = request.messages  
     mentor = request.mentor.lower()
     algorithm = request.algorithm
+    conversation_summary = request.conversation_summary
+    summarized_up_to = request.summarized_up_to
 
     if not query:
         return {"error": "Empty query"}
@@ -137,20 +145,35 @@ async def chat(request: QueryRequest):
     else:
         messages.insert(0, SystemMessage(content=system_prompt))
 
-    # Add relevant context from RAG
+    if conversation_summary:
+        messages.insert(1, AIMessage(
+            content=f"[Summary of earlier conversation]: {conversation_summary}"
+        ))
+
     rag_context = getContext(query)
     if rag_context:
-        messages.insert(1, HumanMessage(content=f"Relevant context:\n{rag_context}"))
+        enhanced_query = f"[Relevant context: {rag_context}]\n\n{query}"
+    else:
+        enhanced_query = query
 
-    messages.append(HumanMessage(content=query))
+    messages.append(HumanMessage(content=enhanced_query))
 
     try:
-        result = llm.invoke(messages) #invoking llm with messages, not a single query
-        return {
-            "response": result.content
-        }
+        result = llm.invoke(messages)
     except Exception as e:
         return {"error": str(e)}
+
+    response_data = {
+        "response": result.content,
+    }
+
+    # Check threshold and summarize if needed
+    summarize_result = check_and_summarize(raw_messages, conversation_summary, summarized_up_to)
+    if summarize_result:
+        response_data["conversation_summary"] = summarize_result["conversation_summary"]
+        response_data["summarized_up_to"] = summarize_result["summarized_up_to"]
+
+    return response_data
     
 @app.post("/analysis/")
 async def analysis(request: AnalysisRequest):
@@ -169,15 +192,41 @@ async def analysis(request: AnalysisRequest):
     except Exception as e:
         return {"error": str(e)}
 
+def summarize_messages(raw_messages,conversation_summary,summarized_up_to) :
+    
+    if len(raw_messages) <= SUMMARIZE_THRESHOLD:
+        return None
+
+    try:
+        messages_to_summarize = raw_messages[:-KEEP_RECENT]
+
+        formatted = "\n".join(
+            f"{m.get('role', 'unknown').upper()}: {m.get('content', '')}"
+            for m in messages_to_summarize
+        )
+
+        summary_result = llm.invoke(
+            generateConversationSummary(conversation_summary, formatted)
+        )
+
+        new_summarized_up_to = summarized_up_to + len(messages_to_summarize)
+
+        return {
+            "conversation_summary": summary_result.content,
+            "summarized_up_to": new_summarized_up_to
+        }
+    except Exception as e:
+        return None
+
 def convert_messages(raw_messages: List[Dict[str, str]]) -> List[BaseMessage]:
     converted = []
     for msg in raw_messages:
-        role = msg["role"]
-        content = msg["content"]
+        role = msg.get("role", "")
+        content = msg.get("content", "")
         if role == "system":
             converted.append(SystemMessage(content=content))
         elif role == "user":
             converted.append(HumanMessage(content=content))
-        elif role == "meta" or "code" or "music":
+        elif role in ("meta", "code", "music"):
             converted.append(AIMessage(content=content))
     return converted
