@@ -178,6 +178,6 @@ def convert_messages(raw_messages: List[Dict[str, str]]) -> List[BaseMessage]:
             converted.append(SystemMessage(content=content))
         elif role == "user":
             converted.append(HumanMessage(content=content))
-        elif role == "meta" or "code" or "music":
+        elif role in ["meta", "code", "music", "assistant"]:
             converted.append(AIMessage(content=content))
     return converted
