@@ -168,7 +168,7 @@ async def chat(request: QueryRequest):
     }
 
     # Check threshold and summarize if needed
-    summarize_result = check_and_summarize(raw_messages, conversation_summary, summarized_up_to)
+    summarize_result = summarize_messages(raw_messages, conversation_summary, summarized_up_to)
     if summarize_result:
         response_data["conversation_summary"] = summarize_result["conversation_summary"]
         response_data["summarized_up_to"] = summarize_result["summarized_up_to"]
