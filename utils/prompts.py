@@ -141,6 +141,27 @@ def updateAlgorithmPrompt(oldFlowchart, newFlowchart, blockInfo):
     - `response`: string containing only the description of changes
     """
 
+def generateConversationSummary(old_summary, messages_to_summarize):
+    return f"""
+    You are a conversation summarizer. Your job is to create a concise summary of a chat conversation
+    between a student and their mentor(s) on the MusicBlocks platform.
+
+    This summary will be used as context for future messages, so capture:
+    - Key topics discussed (what the student built, what blocks/techniques they used)
+    - Questions asked by mentors and the student's answers
+    - Any decisions, challenges, or insights mentioned
+    - Where the conversation left off (what was being discussed last)
+
+    Be factual and concise. Do NOT analyze or give recommendations — just summarize what happened.
+    Keep it under 200 words.
+
+    {f"Previous summary (of even older messages):{chr(10)}{old_summary}" if old_summary else "No previous summary."}
+
+    New messages to summarize:
+    {messages_to_summarize}
+    """
+
+
 def generateAnalysis(old_summary, conversation):
     analysis_prompt = f"""
     You are an expert reflective coach analyzing a learner's journey. Your task is to deeply analyze these summaries to identify the following:
